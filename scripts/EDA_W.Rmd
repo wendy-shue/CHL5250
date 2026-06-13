@@ -1,0 +1,71 @@
+---
+title: "EDA_W"
+author: "Wendy Shue"
+date: "2026-06-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(gtsummary)
+library(openxlsx)
+library(tidyverse)
+library(tidyr)
+library(purrr)
+library(ggplot2)
+library(ggcorrplot)
+library(visdat)
+```
+
+```{r}
+data <- read.csv("../synthetic_dm2_final.csv")
+colnames(data)
+
+dic <- read.xlsx("../Copy of data dictionary_synthetic dm2 dataset_v2.xlsx")
+labels <- dic |> dplyr::select(Variable, Definition)
+
+long <- data |> 
+  pivot_longer(!(c(ID,comp_outcome,follow_up_days,time_to_comp_outcome)),
+               #names_pattern="^(.*)_(.*)",
+               names_sep="_",
+               names_to=c(".value","type"))
+```
+
+# Tables
+
+## Table 1. Summary of characteristics
+
+```{r}
+data |> dplyr::select(-ID) |> 
+  tbl_summary(label=as.list(deframe(labels)))
+```
+
+# Figures 
+
+## Figure 1. Density distribution
+```{r}
+data |> dplyr::select(-ID) |> 
+  lapply(density, na.rm=T) |> 
+  iwalk(~ plot(.x, main = .y))
+```
+
+## Figure 2. Missing
+
+```{r}
+set.seed(1)
+data |> 
+  sample_n(1000) |> 
+  vis_miss(warn_large_data=F)
+```
+
+
+
+## Figure 3. Correlation
+
+```{r}
+data |> dplyr::select(-ID, time_to_comp_outcome, follow_up_days) |> 
+  cor() |> 
+  ggcorrplot(tl.cex=2)
+```
+
