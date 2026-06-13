@@ -15,8 +15,8 @@ data_clean <- data |> dplyr::select(-all_of(drop_cols))
 # multiple imputation ====
 set.seed(123)
 
-imp <- mice(data, m = 1, maxit = 5, seed = 123, method="cart")
+imp <- mice(data_clean, m = 1, maxit = 5, seed = 123, method="cart")
 imputated_data <- complete(imp,1)
-saveRDS(imp, file="../imputed.rds")
+saveRDS(imputated_data, file="../imputed.rds")
 
 
