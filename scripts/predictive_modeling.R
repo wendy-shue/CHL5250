@@ -4,25 +4,25 @@ library(survival)
 library(survminer)
 library(timeROC)
 library(lmtest)
+library(gt)
+library(kableExtra)
+library(knitr)
+library(stringr)
+library(pec)
 
-train_data <- readRDS("../train_clustered.rds")
-test_data  <- readRDS("../test_clustered.rds")
+train_data <- readRDS(here("data", "analysis/train_clustered.rds"))
+test_data  <- readRDS(here("data", "analysis/test_clustered.rds"))
 
 ## Survival Analysis
 cox_base <- coxph(Surv(follow_up_days, comp_outcome) ~ demographics_age_index_visit + 
-                    demographics_birth_sex, data = train_data)
+                    demographics_birth_sex, data = train_data, x = TRUE)
 
 cox_clust <- coxph(Surv(follow_up_days, comp_outcome) ~ demographics_age_index_visit + 
-                     demographics_birth_sex + Cluster, data = train_data)
-
-# Likelihood Ratio Test
-lrt_cox <- lrtest(cox_base, cox_clust)
-cat("Cox LRT p-value (Base vs Cluster):", lrt_cox$`Pr(>Chisq)`[2], "\n")
+                     demographics_birth_sex + Cluster, data = train_data, x = TRUE)
 
 # LRT
 lrt_cox <- lrtest(cox_base, cox_clust)
-p_val <- lrt_cox$`Pr(>Chisq)`[2]
-cat("Cox LRT p-value:", p_val, "\n")
+lrt_cox
 
 ## === AUC Line Plot (Test Data) ===
 roc_times <- c(365, 1095, 1825) # 1, 3, and 5 years in days
@@ -231,3 +231,130 @@ survival_plot_train <- ggsurvplot(
 )
 
 print(survival_plot_train)
+
+
+### ================ Generate Tables ===================
+
+## --- TABLE 1: HORIZON PERFORMANCE METRICS ---
+
+# 1. Calculate Time-Dependent C-index natively using the survival package
+# The 'ymax' argument truncates the calculation to exactly 1, 3, and 5 years (in days)
+c_indices <- c(
+  concordance(cox_clust, newdata = test_data, ymax = 365)$concordance,
+  concordance(cox_clust, newdata = test_data, ymax = 1095)$concordance,
+  concordance(cox_clust, newdata = test_data, ymax = 1825)$concordance
+)
+
+perf_table <- data.frame(
+  Horizon = c("1 year", "3 year", "5 year"),
+  Evaluable_N = c(
+    sum(test_data$follow_up_days >= 365 | test_data$comp_outcome == 1), 
+    sum(test_data$follow_up_days >= 1095 | test_data$comp_outcome == 1), 
+    sum(test_data$follow_up_days >= 1825 | test_data$comp_outcome == 1)
+  ),
+  Events = c(
+    sum(test_data$comp_outcome == 1 & test_data$follow_up_days <= 365),
+    sum(test_data$comp_outcome == 1 & test_data$follow_up_days <= 1095),
+    sum(test_data$comp_outcome == 1 & test_data$follow_up_days <= 1825)
+  ),
+  AUC = c(time_roc_clust_test$AUC[1], time_roc_clust_test$AUC[2], time_roc_clust_test$AUC[3]),
+  C_index = c_indices 
+)
+
+perf_table_formatted <- perf_table %>%
+  mutate(
+    Evaluable_N = formatC(Evaluable_N, format = "f", big.mark = ",", digits = 0),
+    Events = formatC(Events, format = "f", big.mark = ",", digits = 0),
+    AUC = sprintf("%.3f", AUC),
+    C_index = sprintf("%.3f", C_index)
+  )
+
+table_horizon <- kable(perf_table_formatted, 
+                       col.names = c("Horizon", "Evaluable N", "Events", "AUC", "C-index"),
+                       align = c("l", "r", "r", "r", "r")) %>%
+  kable_styling(bootstrap_options = c("hover", "condensed"), 
+                full_width = FALSE, 
+                position = "left") %>%
+  row_spec(0, bold = TRUE, extra_css = "border-bottom: 2px solid #D3D3D3;")
+
+print(table_horizon)
+
+## --- TABLE 2: CLUSTER PROFILE (Training Set) ---
+
+# 1. Calculate the cluster profile
+cluster_profile <- train_data %>%
+  group_by(Cluster) %>%
+  summarise(
+    N = n(),
+    Mean_age = mean(demographics_age_index_visit, na.rm = TRUE),
+    Female_pct = mean(demographics_birth_sex == "Female" | demographics_birth_sex == 2, na.rm = TRUE) * 100,
+    Male_pct = mean(demographics_birth_sex == "Male" | demographics_birth_sex == 1, na.rm = TRUE) * 100,
+    
+    Overall_MACE = mean(comp_outcome == 1, na.rm = TRUE) * 100,
+    MACE_1y = mean(comp_outcome == 1 & follow_up_days <= 365, na.rm = TRUE) * 100,
+    MACE_3y = mean(comp_outcome == 1 & follow_up_days <= 1095, na.rm = TRUE) * 100,
+    MACE_5y = mean(comp_outcome == 1 & follow_up_days <= 1825, na.rm = TRUE) * 100, # Added 5y horizon
+    .groups = "drop"
+  ) %>%
+  mutate(Percent = (N / sum(N)) * 100) %>%
+  relocate(Percent, .after = N)
+
+cluster_profile_formatted <- cluster_profile %>%
+  mutate(
+    N = formatC(N, format = "f", big.mark = ",", digits = 0),
+    Mean_age = sprintf("%.1f", Mean_age),
+    Percent = paste0(sprintf("%.1f", Percent), "%"),
+    Female_pct = paste0(sprintf("%.1f", Female_pct), "%"),
+    Male_pct = paste0(sprintf("%.1f", Male_pct), "%"),
+    Overall_MACE = paste0(sprintf("%.1f", Overall_MACE), "%"),
+    MACE_1y = paste0(sprintf("%.1f", MACE_1y), "%"),
+    MACE_3y = paste0(sprintf("%.1f", MACE_3y), "%"),
+    MACE_5y = paste0(sprintf("%.1f", MACE_5y), "%")
+  )
+
+table_profile <- kable(cluster_profile_formatted, 
+                       col.names = c("Cluster", "N", "Percent", "Mean age", "Female %", "Male %", 
+                                     "Overall MACE", "1y MACE", "3y MACE", "5y MACE"),
+                       caption = "<b>Table 1: Cluster Profile (Training Set)</b>",
+                       align = c("l", "r", "r", "r", "r", "r", "r", "r", "r", "r"),
+                       escape = FALSE) %>% 
+  kable_styling(bootstrap_options = c("hover", "condensed"), 
+                full_width = FALSE, 
+                position = "left") %>%
+  row_spec(0, bold = TRUE, extra_css = "border-bottom: 2px solid #D3D3D3;")
+
+print(table_profile)
+
+
+## --- TABLE 3: HAZARD RATIOS (Cox Model) ---
+
+# 1. Extract and format the statistics using broom::tidy
+hr_table <- tidy(cox_clust, exponentiate = TRUE, conf.int = TRUE) %>%
+  select(term, estimate, conf.low, conf.high, p.value) %>%
+  mutate(
+    term = case_when(
+      term == "demographics_age_index_visit" ~ "Age (per year)",
+      str_detect(term, "demographics_birth_sex") ~ "Sex (Female vs Male)", 
+      term == "Cluster2" ~ "Cluster 2 vs 1",
+      term == "Cluster3" ~ "Cluster 3 vs 1",
+      term == "Cluster4" ~ "Cluster 4 vs 1",
+      TRUE ~ term
+    ),
+    HR_CI = sprintf("%.2f (%.2f - %.2f)", estimate, conf.low, conf.high),
+    P_value = ifelse(p.value < 0.001, "<0.001", sprintf("%.3f", p.value))
+  ) %>%
+  select(term, HR_CI, P_value)
+
+table_hr <- kable(hr_table, 
+                  col.names = c("Clinical Variable", "Hazard Ratio (95% CI)", "P-Value"),
+                  caption = "<b>Table 4: Multivariate Cox Proportional Hazards Model</b>",
+                  align = c("l", "c", "r"),
+                  escape = FALSE) %>%
+  kable_styling(bootstrap_options = c("hover", "condensed"), 
+                full_width = FALSE, 
+                position = "left") %>%
+  row_spec(0, bold = TRUE, extra_css = "border-bottom: 2px solid #D3D3D3;") %>%
+  add_indent(c(3, 4, 5)) 
+
+print(table_hr)
+
